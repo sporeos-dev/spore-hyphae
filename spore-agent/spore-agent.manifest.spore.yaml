@@ -1,0 +1,16 @@
+# Copyright 2026 Matt Harrison
+# SPDX-License-Identifier: AGPL-3.0-only
+
+# yaml-language-server: $schema=../../spore-os-protocol/versions/v0d2/spore.manifest.v0.schema.yaml
+
+id: dev.sporeos.agent
+name: Spore Agent
+description: Extends the reach of the hub into the user space.
+trust: system
+
+schema: SPORE/v0d2
+version: 0.2.0
+app: ./spore-agent
+
+api: []
+topics: []
