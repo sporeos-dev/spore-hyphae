@@ -1,0 +1,64 @@
+# Copyright 2026 Matt Harrison
+# SPDX-License-Identifier: AGPL-3.0-only
+
+# yaml-language-server: $schema=../../spore-os-protocol/versions/v0d2/spore.manifest.v0.schema.yaml
+
+id: dev.sporeos.hyphae
+name: Spore Agent
+description: Extends the reach of the hub into the user space.
+trust: system
+
+schema: SPORE/v0d2
+version: 0.2.0
+app: ./hyphae
+
+api: 
+  - name: HYPHAE.node.install
+    description: Install a node.
+    risk: protected
+    usage:
+      - HYPHAE.node.install path=/path/to/manifest/node.manifest.spore.yaml
+    inputs:
+      - name: path
+        type: string
+        description: Path to .manifest.spore.yaml file.
+        required: true
+    outputs: []
+
+  - name: HYPHAE.node.uninstall
+    description: Uninstall a node.
+    risk: protected
+    usage:
+      - SPORE.node.uninstall node=node
+    inputs:
+      - name: node
+        type: string
+        description: Node ID
+        required: true
+    outputs: []
+    
+  - name: HYPHAE.node.spawn
+    description: Start a node.
+    risk: standard
+    usage:
+      - HYPHAE.node.spawn node=node
+    inputs:
+      - name: node
+        type: string
+        description: Node ID
+        required: true
+    outputs: []
+    
+  - name: HYPHAE.node.kill
+    description: Stop a node.
+    risk: standard
+    usage:
+      - HYPHAE.node.kill node=node
+    inputs:
+      - name: node
+        type: string
+        description: Node ID
+        required: true
+    outputs: []
+
+topics: []

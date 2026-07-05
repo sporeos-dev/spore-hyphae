@@ -31,6 +31,7 @@ go.work.sum
 # .idea/
 # .vscode/
 
-spore-agent/spore-agent
+hyphae/hyphae
 .private/
 .github/copilot-instructions.md
+
