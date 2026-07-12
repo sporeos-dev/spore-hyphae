@@ -4,7 +4,10 @@
 package main
 
 import (
+	"crypto/sha256"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -14,11 +17,14 @@ import (
 	"strings"
 	"time"
 
+	"syscall"
+	"unsafe"
+
 	"github.com/kardianos/service"
 	spore "github.com/sporeos-dev/spore-client-libs/go"
 )
 
-const appId = "dev.sporeos.agent"
+const appId = "dev.sporeos.hyphae"
 
 var svcConfig = &service.Config{
 	Name:        "dev.sporeos.agent",
@@ -44,8 +50,9 @@ func (p *program) Start(s service.Service) error {
 	p.client = spore.NewClient(appId)
 
 	// Register handlers — called by the hub when it needs user-space access.
-	p.client.HandleRequest("HYPHAE.node.install", p.handleInstall)
-	p.client.HandleRequest("HYPHAE.node.uninstall", p.handleUninstall)
+	p.client.HandleRequest("HYPHAE.manifest.read", p.handleManifestRead)
+	p.client.HandleRequest("HYPHAE.binary.hash", p.handleBinaryHash)
+	p.client.HandleRequest("HYPHAE.file.hash", p.handleFileHash)
 	p.client.HandleRequest("HYPHAE.node.spawn", p.handleSpawn)
 	p.client.HandleRequest("HYPHAE.node.kill", p.handleKill)
 
@@ -78,6 +85,11 @@ func (p *program) run() {
 			if strings.Contains(err.Error(), "use of closed network connection") {
 				return
 			}
+			var hubErr *spore.HubError
+			if errors.As(err, &hubErr) {
+				slog.Error("Hub rejected connection, not retrying", "code", hubErr.Code, "what", hubErr.What)
+				return
+			}
 			slog.Warn("Disconnected from hub, reconnecting in 5s", "error", err)
 		}
 		p.client.Close()
@@ -98,55 +110,128 @@ func (p *program) Stop(s service.Service) error {
 	return nil
 }
 
-// handleInstall is called by the hub when it needs to install a node whose
-// manifest lives in the user's file space (e.g. ~/Documents/dev/).
-func (p *program) handleInstall(call *spore.Call) {
+// handleManifestRead reads a manifest file from user space and returns its raw
+// content. The hub parses it and registers the node; use HYPHAE.file.hash to
+// hash the manifest or its binary separately.
+func (p *program) handleManifestRead(call *spore.Call) {
 	if !call.HasArg("path") {
 		_ = call.Error(spore.ErrorCodeArgumentMissing, "path")
 		return
 	}
 	path := call.Arg("path")
-	// TODO: validate the manifest is readable and well-formed, then hand
-	// back to the hub (e.g. confirm the path and return manifest metadata).
-	_ = path
-	_ = call.Reply(nil)
-}
 
-// handleUninstall is called by the hub to uninstall a node from user space.
-func (p *program) handleUninstall(call *spore.Call) {
-	if !call.HasArg("node") {
-		_ = call.Error(spore.ErrorCodeArgumentMissing, "node")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		_ = call.Error(spore.ErrorCodeRuntime, err.Error())
 		return
 	}
-	nodeID := call.Arg("node")
-	// TODO: clean up any user-space artefacts for this node.
-	_ = nodeID
-	_ = call.Reply(nil)
+
+	_ = call.Reply(map[string]string{
+		"content": string(data),
+	})
 }
 
-// handleSpawn is called by the hub to start a node process in user space.
-// Most nodes run as the logged-in user; the hub delegates the exec here so
-// the process inherits the user session rather than the _spore account.
+// handleBinaryHash returns the SHA-256 hash of the binary for a running process
+// identified by PID. The hub calls this at connect time to verify that the
+// connecting node's binary matches what was recorded at install.
+func (p *program) handleBinaryHash(call *spore.Call) {
+	if !call.HasArg("pid") {
+		_ = call.Error(spore.ErrorCodeArgumentMissing, "pid")
+		return
+	}
+	pid, err := strconv.Atoi(call.Arg("pid"))
+	if err != nil {
+		_ = call.Error(spore.ErrorCodeArgumentInvalidType, "pid must be an integer")
+		return
+	}
+
+	binPath, err := binaryPathForPID(pid)
+	if err != nil {
+		_ = call.Error(spore.ErrorCodeRuntime, err.Error())
+		return
+	}
+
+	hex, err := hashFile(binPath)
+	if err != nil {
+		_ = call.Error(spore.ErrorCodeRuntime, err.Error())
+		return
+	}
+
+	_ = call.Reply(map[string]string{"hash": hex})
+}
+
+// handleFileHash returns the SHA-256 hash of any file at the given path.
+// Used at install time to hash a node binary or manifest without requiring
+// a running process — the hub stores the digest in its registry.
+func (p *program) handleFileHash(call *spore.Call) {
+	if !call.HasArg("path") {
+		_ = call.Error(spore.ErrorCodeArgumentMissing, "path")
+		return
+	}
+
+	hex, err := hashFile(call.Arg("path"))
+	if err != nil {
+		_ = call.Error(spore.ErrorCodeRuntime, err.Error())
+		return
+	}
+
+	_ = call.Reply(map[string]string{"hash": hex})
+}
+
+// handleSpawn executes a binary in the user session. Fire-and-forget — the hub
+// has already verified trust and learns the PID automatically via socket peer
+// credentials when the spawned node connects.
 func (p *program) handleSpawn(call *spore.Call) {
-	if !call.HasArg("node") {
-		_ = call.Error(spore.ErrorCodeArgumentMissing, "node")
+	if !call.HasArg("binary") {
+		_ = call.Error(spore.ErrorCodeArgumentMissing, "binary")
 		return
 	}
-	nodeID := call.Arg("node")
-	// TODO: resolve the node binary path from its manifest and exec it.
-	_ = nodeID
+	binary := call.Arg("binary")
+
+	cmd := exec.Command(binary)
+	if err := cmd.Start(); err != nil {
+		_ = call.Error(spore.ErrorCodeRuntime, err.Error())
+		return
+	}
+	// Detach: do not wait on the child. The hub tracks it via socket peercred.
 	_ = call.Reply(nil)
 }
 
-// handleKill is called by the hub to stop a node process running in user space.
+// handleKill sends SIGTERM to the process with the given PID. If the process
+// has not exited within 3 seconds it is force-killed with SIGKILL.
 func (p *program) handleKill(call *spore.Call) {
-	if !call.HasArg("node") {
-		_ = call.Error(spore.ErrorCodeArgumentMissing, "node")
+	if !call.HasArg("pid") {
+		_ = call.Error(spore.ErrorCodeArgumentMissing, "pid")
 		return
 	}
-	nodeID := call.Arg("node")
-	// TODO: find the process for this node and terminate it.
-	_ = nodeID
+	pid, err := strconv.Atoi(call.Arg("pid"))
+	if err != nil {
+		_ = call.Error(spore.ErrorCodeArgumentInvalidType, "pid must be an integer")
+		return
+	}
+
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		_ = call.Error(spore.ErrorCodeRuntime, err.Error())
+		return
+	}
+
+	if err := process.Signal(syscall.SIGTERM); err != nil {
+		_ = call.Error(spore.ErrorCodeRuntime, err.Error())
+		return
+	}
+
+	// Wait up to 3 seconds for graceful exit, then force-kill.
+	for i := 0; i < 30; i++ {
+		time.Sleep(100 * time.Millisecond)
+		if err := process.Signal(syscall.Signal(0)); err != nil {
+			// Process is gone — clean exit after SIGTERM.
+			_ = call.Reply(nil)
+			return
+		}
+	}
+
+	_ = process.Signal(syscall.SIGKILL)
 	_ = call.Reply(nil)
 }
 
@@ -217,6 +302,49 @@ func main() {
 	if err := svc.Run(); err != nil {
 		slog.Error("Service error", "error", err)
 		os.Exit(1)
+	}
+}
+
+// hashFile returns the SHA-256 hex digest of the file at path.
+func hashFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
+}
+
+// binaryPathForPID returns the absolute path of the executable for the given
+// PID using platform-specific APIs.
+func binaryPathForPID(pid int) (string, error) {
+	switch runtime.GOOS {
+	case "linux":
+		return os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
+	case "darwin":
+		buf := make([]byte, 4096)
+		ret, _, errno := syscall.Syscall(syscall.SYS_PROC_INFO,
+			uintptr(9), // PROC_PIDPATHINFO
+			uintptr(pid),
+			uintptr(unsafe.Pointer(&buf[0])),
+		)
+		if errno != 0 || ret == 0 {
+			return "", fmt.Errorf("proc_pidpath failed for pid %d: %w", pid, errno)
+		}
+		n := ret
+		for i := uintptr(0); i < ret; i++ {
+			if buf[i] == 0 {
+				n = i
+				break
+			}
+		}
+		return string(buf[:n]), nil
+	default:
+		return "", fmt.Errorf("binaryPathForPID: unsupported platform %s", runtime.GOOS)
 	}
 }
 
