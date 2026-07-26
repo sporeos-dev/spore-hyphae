@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
-	"strings"
 	"time"
 
 	"syscall"
@@ -41,12 +40,10 @@ var svcConfig = &service.Config{
 // manages connection lifetime.
 type program struct {
 	client *spore.Client
-	done   chan struct{}
 }
 
 // Start is called by the service manager on launch.
 func (p *program) Start(s service.Service) error {
-	p.done = make(chan struct{})
 	p.client = spore.NewClient(appId)
 
 	// Register handlers — called by the hub when it needs user-space access.
@@ -61,52 +58,35 @@ func (p *program) Start(s service.Service) error {
 }
 
 // run connects to the hub and listens, reconnecting on disconnect.
+// The OS (via launchd KeepAlive) owns the process lifecycle; this loop
+// runs forever and never exits voluntarily.
 func (p *program) run() {
 	for {
-		select {
-		case <-p.done:
-			return
-		default:
-		}
-
 		if err := p.client.Connect(); err != nil {
 			slog.Warn("Could not connect to hub, retrying in 5s", "error", err)
-			select {
-			case <-p.done:
-				return
-			case <-time.After(5 * time.Second):
-				continue
-			}
+			time.Sleep(5 * time.Second)
+			continue
 		}
 
 		slog.Info("Connected to hub")
 
 		if err := p.client.Listen(); err != nil {
-			if strings.Contains(err.Error(), "use of closed network connection") {
-				return
-			}
 			var hubErr *spore.HubError
 			if errors.As(err, &hubErr) {
 				slog.Error("Hub rejected connection, not retrying", "code", hubErr.Code, "what", hubErr.What)
-				return
+				time.Sleep(5 * time.Second)
+			} else {
+				slog.Warn("Disconnected from hub, reconnecting in 5s", "error", err)
+				time.Sleep(5 * time.Second)
 			}
-			slog.Warn("Disconnected from hub, reconnecting in 5s", "error", err)
 		}
 		p.client.Close()
-
-		select {
-		case <-p.done:
-			return
-		case <-time.After(5 * time.Second):
-		}
 	}
 }
 
-// Stop is called by the service manager on SIGTERM or `spore-agent stop`.
+// Stop is called by the service manager on SIGTERM.
+// Lifecycle is managed by launchd (KeepAlive); nothing to clean up here.
 func (p *program) Stop(s service.Service) error {
-	slog.Info("Spore Agent stopping")
-	close(p.done)
-	p.client.Close()
 	return nil
 }
 
@@ -316,7 +296,7 @@ func hashFile(path string) (string, error) {
 	if _, err := io.Copy(h, f); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("%x", h.Sum(nil)), nil
+	return "sha256:" + fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
 // binaryPathForPID returns the absolute path of the executable for the given
