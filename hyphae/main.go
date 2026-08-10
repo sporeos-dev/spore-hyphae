@@ -5,7 +5,6 @@ package main
 
 import (
 	"crypto/sha256"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -20,7 +19,15 @@ import (
 	"unsafe"
 
 	"github.com/kardianos/service"
-	spore "github.com/sporeos-dev/spore-client-libs/go"
+	spore "github.com/sporeos-dev/spore-client-libs/spore_go"
+	"github.com/sporeos-dev/spore-client-libs/spore_go/request"
+	"github.com/sporeos-dev/spore-client-libs/spore_go/response"
+)
+
+const (
+	errArgumentMissing     = "RequiredArgumentMissing"
+	errArgumentInvalidType = "ArgumentInvalidType"
+	errRuntime             = "Runtime"
 )
 
 const appId = "dev.sporeos.hyphae"
@@ -44,14 +51,27 @@ type program struct {
 
 // Start is called by the service manager on launch.
 func (p *program) Start(s service.Service) error {
-	p.client = spore.NewClient(appId)
+	client, err := spore.New(appId)
+	if err != nil {
+		return fmt.Errorf("spore client init: %w", err)
+	}
+	p.client = client
 
-	// Register handlers — called by the hub when it needs user-space access.
-	p.client.HandleRequest("HYPHAE.manifest.read", p.handleManifestRead)
-	p.client.HandleRequest("HYPHAE.binary.hash", p.handleBinaryHash)
-	p.client.HandleRequest("HYPHAE.file.hash", p.handleFileHash)
-	p.client.HandleRequest("HYPHAE.node.spawn", p.handleSpawn)
-	p.client.HandleRequest("HYPHAE.node.kill", p.handleKill)
+	// Dispatch incoming hub requests by command name.
+	p.client.OnRequest(func(req *request.Request) {
+		switch req.Command() {
+		case "HYPHAE.manifest.read":
+			p.handleManifestRead(req)
+		case "HYPHAE.binary.hash":
+			p.handleBinaryHash(req)
+		case "HYPHAE.file.hash":
+			p.handleFileHash(req)
+		case "HYPHAE.node.spawn":
+			p.handleSpawn(req)
+		case "HYPHAE.node.kill":
+			p.handleKill(req)
+		}
+	})
 
 	go p.run()
 	return nil
@@ -71,16 +91,10 @@ func (p *program) run() {
 		slog.Info("Connected to hub")
 
 		if err := p.client.Listen(); err != nil {
-			var hubErr *spore.HubError
-			if errors.As(err, &hubErr) {
-				slog.Error("Hub rejected connection, not retrying", "code", hubErr.Code, "what", hubErr.What)
-				time.Sleep(5 * time.Second)
-			} else {
-				slog.Warn("Disconnected from hub, reconnecting in 5s", "error", err)
-				time.Sleep(5 * time.Second)
-			}
+			slog.Warn("Disconnected from hub, reconnecting in 5s", "error", err)
+			time.Sleep(5 * time.Second)
 		}
-		p.client.Close()
+		_ = p.client.Disconnect()
 	}
 }
 
@@ -93,111 +107,112 @@ func (p *program) Stop(s service.Service) error {
 // handleManifestRead reads a manifest file from user space and returns its raw
 // content. The hub parses it and registers the node; use HYPHAE.file.hash to
 // hash the manifest or its binary separately.
-func (p *program) handleManifestRead(call *spore.Call) {
-	if !call.HasArg("path") {
-		_ = call.Error(spore.ErrorCodeArgumentMissing, "path")
+func (p *program) handleManifestRead(req *request.Request) {
+	path, ok := req.Arg("path")
+	if !ok {
+		_ = p.client.SendResponseError(response.Error(req.Command(), req.Handle(), errArgumentMissing, "path"))
 		return
 	}
-	path := call.Arg("path")
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		_ = call.Error(spore.ErrorCodeRuntime, err.Error())
+		_ = p.client.SendResponseError(response.Error(req.Command(), req.Handle(), errRuntime, err.Error()))
 		return
 	}
 
-	_ = call.Reply(map[string]string{
-		"content": string(data),
-	})
+	_ = p.client.SendResponse(response.New(req.Command(), req.Handle()).WithArg("content", string(data)))
 }
 
 // handleBinaryHash returns the SHA-256 hash of the binary for a running process
 // identified by PID. The hub calls this at connect time to verify that the
 // connecting node's binary matches what was recorded at install.
-func (p *program) handleBinaryHash(call *spore.Call) {
-	if !call.HasArg("pid") {
-		_ = call.Error(spore.ErrorCodeArgumentMissing, "pid")
+func (p *program) handleBinaryHash(req *request.Request) {
+	pidStr, ok := req.Arg("pid")
+	if !ok {
+		_ = p.client.SendResponseError(response.Error(req.Command(), req.Handle(), errArgumentMissing, "pid"))
 		return
 	}
-	pid, err := strconv.Atoi(call.Arg("pid"))
+	pid, err := strconv.Atoi(pidStr)
 	if err != nil {
-		_ = call.Error(spore.ErrorCodeArgumentInvalidType, "pid must be an integer")
+		_ = p.client.SendResponseError(response.Error(req.Command(), req.Handle(), errArgumentInvalidType, "pid must be an integer"))
 		return
 	}
 
 	binPath, err := binaryPathForPID(pid)
 	if err != nil {
-		_ = call.Error(spore.ErrorCodeRuntime, err.Error())
+		_ = p.client.SendResponseError(response.Error(req.Command(), req.Handle(), errRuntime, err.Error()))
 		return
 	}
 
 	hex, err := hashFile(binPath)
 	if err != nil {
-		_ = call.Error(spore.ErrorCodeRuntime, err.Error())
+		_ = p.client.SendResponseError(response.Error(req.Command(), req.Handle(), errRuntime, err.Error()))
 		return
 	}
 
-	_ = call.Reply(map[string]string{"hash": hex})
+	_ = p.client.SendResponse(response.New(req.Command(), req.Handle()).WithArg("hash", hex))
 }
 
 // handleFileHash returns the SHA-256 hash of any file at the given path.
 // Used at install time to hash a node binary or manifest without requiring
 // a running process — the hub stores the digest in its registry.
-func (p *program) handleFileHash(call *spore.Call) {
-	if !call.HasArg("path") {
-		_ = call.Error(spore.ErrorCodeArgumentMissing, "path")
+func (p *program) handleFileHash(req *request.Request) {
+	path, ok := req.Arg("path")
+	if !ok {
+		_ = p.client.SendResponseError(response.Error(req.Command(), req.Handle(), errArgumentMissing, "path"))
 		return
 	}
 
-	hex, err := hashFile(call.Arg("path"))
+	hex, err := hashFile(path)
 	if err != nil {
-		_ = call.Error(spore.ErrorCodeRuntime, err.Error())
+		_ = p.client.SendResponseError(response.Error(req.Command(), req.Handle(), errRuntime, err.Error()))
 		return
 	}
 
-	_ = call.Reply(map[string]string{"hash": hex})
+	_ = p.client.SendResponse(response.New(req.Command(), req.Handle()).WithArg("hash", hex))
 }
 
 // handleSpawn executes a binary in the user session. Fire-and-forget — the hub
 // has already verified trust and learns the PID automatically via socket peer
 // credentials when the spawned node connects.
-func (p *program) handleSpawn(call *spore.Call) {
-	if !call.HasArg("binary") {
-		_ = call.Error(spore.ErrorCodeArgumentMissing, "binary")
+func (p *program) handleSpawn(req *request.Request) {
+	binary, ok := req.Arg("binary")
+	if !ok {
+		_ = p.client.SendResponseError(response.Error(req.Command(), req.Handle(), errArgumentMissing, "binary"))
 		return
 	}
-	binary := call.Arg("binary")
 
 	cmd := exec.Command(binary)
 	if err := cmd.Start(); err != nil {
-		_ = call.Error(spore.ErrorCodeRuntime, err.Error())
+		_ = p.client.SendResponseError(response.Error(req.Command(), req.Handle(), errRuntime, err.Error()))
 		return
 	}
 	// Detach: do not wait on the child. The hub tracks it via socket peercred.
-	_ = call.Reply(nil)
+	_ = p.client.SendResponse(response.New(req.Command(), req.Handle()))
 }
 
 // handleKill sends SIGTERM to the process with the given PID. If the process
 // has not exited within 3 seconds it is force-killed with SIGKILL.
-func (p *program) handleKill(call *spore.Call) {
-	if !call.HasArg("pid") {
-		_ = call.Error(spore.ErrorCodeArgumentMissing, "pid")
+func (p *program) handleKill(req *request.Request) {
+	pidStr, ok := req.Arg("pid")
+	if !ok {
+		_ = p.client.SendResponseError(response.Error(req.Command(), req.Handle(), errArgumentMissing, "pid"))
 		return
 	}
-	pid, err := strconv.Atoi(call.Arg("pid"))
+	pid, err := strconv.Atoi(pidStr)
 	if err != nil {
-		_ = call.Error(spore.ErrorCodeArgumentInvalidType, "pid must be an integer")
+		_ = p.client.SendResponseError(response.Error(req.Command(), req.Handle(), errArgumentInvalidType, "pid must be an integer"))
 		return
 	}
 
 	process, err := os.FindProcess(pid)
 	if err != nil {
-		_ = call.Error(spore.ErrorCodeRuntime, err.Error())
+		_ = p.client.SendResponseError(response.Error(req.Command(), req.Handle(), errRuntime, err.Error()))
 		return
 	}
 
 	if err := process.Signal(syscall.SIGTERM); err != nil {
-		_ = call.Error(spore.ErrorCodeRuntime, err.Error())
+		_ = p.client.SendResponseError(response.Error(req.Command(), req.Handle(), errRuntime, err.Error()))
 		return
 	}
 
@@ -206,13 +221,13 @@ func (p *program) handleKill(call *spore.Call) {
 		time.Sleep(100 * time.Millisecond)
 		if err := process.Signal(syscall.Signal(0)); err != nil {
 			// Process is gone — clean exit after SIGTERM.
-			_ = call.Reply(nil)
+			_ = p.client.SendResponse(response.New(req.Command(), req.Handle()))
 			return
 		}
 	}
 
 	_ = process.Signal(syscall.SIGKILL)
-	_ = call.Reply(nil)
+	_ = p.client.SendResponse(response.New(req.Command(), req.Handle()))
 }
 
 func main() {
