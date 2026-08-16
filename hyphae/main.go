@@ -51,10 +51,8 @@ type program struct {
 
 // Start is called by the service manager on launch.
 func (p *program) Start(s service.Service) error {
-	client, err := spore.New(appId)
-	if err != nil {
-		return fmt.Errorf("spore client init: %w", err)
-	}
+	client := spore.New(appId).
+		WithDefaultErrorHandler()
 	p.client = client
 
 	// Dispatch incoming hub requests by command name.
