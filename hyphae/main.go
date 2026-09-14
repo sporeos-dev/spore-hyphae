@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"syscall"
@@ -30,7 +31,7 @@ const (
 	errRuntime             = "Runtime"
 )
 
-const appId = "dev.sporeos.hyphae"
+const appId = "dev.sporeos.HYPHAE"
 
 var svcConfig = &service.Config{
 	Name:        "dev.sporeos.agent",
@@ -57,16 +58,16 @@ func (p *program) Start(s service.Service) error {
 
 	// Dispatch incoming hub requests by command name.
 	p.client.OnRequest(func(req *request.Request) {
-		switch req.Command() {
-		case "HYPHAE.manifest.read":
+		command := req.Command()
+		if strings.HasSuffix(command, "read") {
 			p.handleManifestRead(req)
-		case "HYPHAE.binary.hash":
+		} else if strings.HasSuffix(command, "binary.hash") {
 			p.handleBinaryHash(req)
-		case "HYPHAE.file.hash":
+		} else if strings.HasSuffix(command, "file.hash") {
 			p.handleFileHash(req)
-		case "HYPHAE.node.spawn":
+		} else if strings.HasSuffix(command, "spawn") {
 			p.handleSpawn(req)
-		case "HYPHAE.node.kill":
+		} else if strings.HasSuffix(command, "kill") {
 			p.handleKill(req)
 		}
 	})
