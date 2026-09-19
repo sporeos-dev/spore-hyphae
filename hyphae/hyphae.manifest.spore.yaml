@@ -64,12 +64,12 @@ api:
         type: string
         description: SHA-256 hex digest of the file.
 
-  - name: node.spawn
+  - name: hspawn
     description: Execute a node binary in the user session. Fire-and-forget;
       the hub learns the PID via socket peer credentials when the node connects.
     risk: protected
     usage:
-      - node.spawn binary=/path/to/binary
+      - hspawn binary=/path/to/binary
     inputs:
       - name: binary
         type: string
@@ -77,12 +77,12 @@ api:
         required: true
     outputs: []
 
-  - name: node.kill
+  - name: hkill
     description: Send SIGTERM to a user-space process, escalating to SIGKILL
       after 3 seconds if it has not exited.
     risk: protected
     usage:
-      - node.kill pid=1234
+      - hkill pid=1234
     inputs:
       - name: pid
         type: string

@@ -59,16 +59,19 @@ func (p *program) Start(s service.Service) error {
 	// Dispatch incoming hub requests by command name.
 	p.client.OnRequest(func(req *request.Request) {
 		command := req.Command()
+		slog.Debug("received request", "handle", req.Handle(), "command", command)
 		if strings.HasSuffix(command, "read") {
 			p.handleManifestRead(req)
 		} else if strings.HasSuffix(command, "binary.hash") {
 			p.handleBinaryHash(req)
 		} else if strings.HasSuffix(command, "file.hash") {
 			p.handleFileHash(req)
-		} else if strings.HasSuffix(command, "spawn") {
+		} else if strings.HasSuffix(command, "hspawn") {
 			p.handleSpawn(req)
-		} else if strings.HasSuffix(command, "kill") {
+		} else if strings.HasSuffix(command, "hkill") {
 			p.handleKill(req)
+		} else {
+			slog.Warn("no handler matched for request command", "handle", req.Handle(), "command", command)
 		}
 	})
 
@@ -113,12 +116,16 @@ func (p *program) handleManifestRead(req *request.Request) {
 		return
 	}
 
+	slog.Debug("handling manifest read", "handle", req.Handle(), "path", path)
+
 	data, err := os.ReadFile(path)
 	if err != nil {
+		slog.Debug("manifest read failed", "handle", req.Handle(), "path", path, "error", err)
 		_ = p.client.SendResponseError(response.Error(req.Command(), req.Handle(), errRuntime, err.Error()))
 		return
 	}
 
+	slog.Debug("manifest read succeeded, sending response", "handle", req.Handle(), "path", path)
 	_ = p.client.SendResponse(response.New(req.Command(), req.Handle()).WithArg("content", string(data)))
 }
 
@@ -162,12 +169,16 @@ func (p *program) handleFileHash(req *request.Request) {
 		return
 	}
 
+	slog.Debug("handling file hash", "handle", req.Handle(), "path", path)
+
 	hex, err := hashFile(path)
 	if err != nil {
+		slog.Debug("file hash failed", "handle", req.Handle(), "path", path, "error", err)
 		_ = p.client.SendResponseError(response.Error(req.Command(), req.Handle(), errRuntime, err.Error()))
 		return
 	}
 
+	slog.Debug("file hash succeeded, sending response", "handle", req.Handle(), "path", path)
 	_ = p.client.SendResponse(response.New(req.Command(), req.Handle()).WithArg("hash", hex))
 }
 
@@ -186,12 +197,16 @@ func (p *program) handleSpawn(req *request.Request) {
 		_ = p.client.SendResponseError(response.Error(req.Command(), req.Handle(), errRuntime, err.Error()))
 		return
 	}
-	// Detach: do not wait on the child. The hub tracks it via socket peercred.
+	// Reap in the background so the child doesn't linger as a zombie —
+	// otherwise handleKill can never observe it as exited. The hub still
+	// tracks the node via socket peercred, so we don't wait on the result here.
+	go func() { _ = cmd.Wait() }()
 	_ = p.client.SendResponse(response.New(req.Command(), req.Handle()))
 }
 
-// handleKill sends SIGTERM to the process with the given PID. If the process
-// has not exited within 3 seconds it is force-killed with SIGKILL.
+// handleKill sends SIGTERM to the process with the given PID and acknowledges
+// the request immediately. If it has not exited within 3 seconds, it is
+// force-killed with SIGKILL in the background.
 func (p *program) handleKill(req *request.Request) {
 	pidStr, ok := req.Arg("pid")
 	if !ok {
@@ -215,18 +230,19 @@ func (p *program) handleKill(req *request.Request) {
 		return
 	}
 
-	// Wait up to 3 seconds for graceful exit, then force-kill.
-	for i := 0; i < 30; i++ {
-		time.Sleep(100 * time.Millisecond)
-		if err := process.Signal(syscall.Signal(0)); err != nil {
-			// Process is gone — clean exit after SIGTERM.
-			_ = p.client.SendResponse(response.New(req.Command(), req.Handle()))
-			return
-		}
-	}
-
-	_ = process.Signal(syscall.SIGKILL)
 	_ = p.client.SendResponse(response.New(req.Command(), req.Handle()))
+
+	go func() {
+		// Wait up to 3 seconds for graceful exit, then force-kill.
+		for i := 0; i < 30; i++ {
+			time.Sleep(100 * time.Millisecond)
+			if err := process.Signal(syscall.Signal(0)); err != nil {
+				return
+			}
+		}
+
+		_ = process.Signal(syscall.SIGKILL)
+	}()
 }
 
 func main() {
