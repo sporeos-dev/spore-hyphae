@@ -9,10 +9,34 @@ description: Extends the reach of the hub into the user space.
 trust: system
 
 schema: SPORE/v0d2
-version: 0.2.0
+version: 0.2.1
 app: ./hyphae
 
 api:
+  - name: confirm
+    description: Request OS-authenticated user confirmation for a node command.
+      Protected hub operations use this to obtain a yes or no decision; the hub
+      remains responsible for authorization and committing the operation.
+    risk: standard
+    usage:
+      - confirm node=dev.example.node command=node.install
+    inputs:
+      - name: node
+        type: string
+        description: ID of the node requesting authorization.
+        required: true
+      - name: command
+        type: string
+        description: Exact Spore command the node requests authorization to run.
+        required: true
+    outputs:
+      - name: yes
+        type: boolean
+        description: True when the user completes OS authentication.
+      - name: no
+        type: boolean
+        description: True when the user denies or cancels OS authentication.
+
   - name: manifest.read
     description: Read a node manifest from user space and return its raw YAML content.
       Use HYPHAE.file.hash to hash the manifest or its binary separately.

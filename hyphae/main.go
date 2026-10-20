@@ -48,13 +48,18 @@ var svcConfig = &service.Config{
 // manages connection lifetime.
 type program struct {
 	client *spore.Client
+
+	authenticate authenticationFunc
 }
+
+type authenticationFunc func(reason string) (bool, error)
 
 // Start is called by the service manager on launch.
 func (p *program) Start(s service.Service) error {
 	client := spore.New(appId).
 		WithDefaultErrorHandler()
 	p.client = client
+	p.authenticate = authenticateUser
 
 	// Dispatch incoming hub requests by command name.
 	p.client.OnRequest(func(req *request.Request) {
@@ -70,6 +75,8 @@ func (p *program) Start(s service.Service) error {
 			p.handleSpawn(req)
 		} else if strings.HasSuffix(command, "hkill") {
 			p.handleKill(req)
+		} else if strings.HasSuffix(command, "confirm") {
+			p.handleConfirm(req)
 		} else {
 			slog.Warn("no handler matched for request command", "handle", req.Handle(), "command", command)
 		}
@@ -77,6 +84,46 @@ func (p *program) Start(s service.Service) error {
 
 	go p.run()
 	return nil
+}
+
+// handleConfirm authenticates the signed-in user before answering yes or no.
+// The hub determines which protected operation requires this confirmation.
+func (p *program) handleConfirm(req *request.Request) {
+	res, resErr := confirm(req, p.authenticate)
+	if resErr != nil {
+		_ = p.client.SendResponseError(resErr)
+		return
+	}
+	_ = p.client.SendResponse(res)
+}
+
+func confirm(req *request.Request, authenticate authenticationFunc) (*response.Response, *response.ResponseError) {
+	node, ok := req.Arg("node")
+	if !ok || strings.TrimSpace(node) == "" {
+		return nil, response.Error(req.Command(), req.Handle(), errArgumentMissing, "node")
+	}
+	command, ok := req.Arg("command")
+	if !ok || strings.TrimSpace(command) == "" {
+		return nil, response.Error(req.Command(), req.Handle(), errArgumentMissing, "command")
+	}
+	if authenticate == nil {
+		return nil, response.Error(req.Command(), req.Handle(), errRuntime, "authentication is not configured")
+	}
+
+	confirmed, err := authenticate(confirmationReason(node, command))
+	if err != nil {
+		return nil, response.Error(req.Command(), req.Handle(), errRuntime, err.Error())
+	}
+
+	res := response.New(req.Command(), req.Handle())
+	if confirmed {
+		return res.WithFlag("yes"), nil
+	}
+	return res.WithFlag("no"), nil
+}
+
+func confirmationReason(node string, command string) string {
+	return fmt.Sprintf("Spore wants to authorize %s to run %s.", node, command)
 }
 
 // run connects to the hub and listens, reconnecting on disconnect.
