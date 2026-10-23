@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"syscall"
-	"unsafe"
 
 	"github.com/kardianos/service"
 	spore "github.com/sporeos-dev/spore-client-libs/spore_go"
@@ -33,6 +32,19 @@ const (
 
 const appId = "dev.sporeos.HYPHAE"
 
+const systemdUserServiceScript = `[Unit]
+Description={{.Description}}
+ConditionFileIsExecutable={{.Path|cmdEscape}}
+
+[Service]
+ExecStart={{.Path|cmdEscape}}{{range .Arguments}} {{.|cmd}}{{end}}
+Restart=always
+RestartSec=120
+
+[Install]
+WantedBy=default.target
+`
+
 var svcConfig = &service.Config{
 	Name:        "dev.sporeos.agent",
 	DisplayName: "Spore Agent",
@@ -40,7 +52,8 @@ var svcConfig = &service.Config{
 	// UserService installs to ~/Library/LaunchAgents (macOS) and
 	// ~/.config/systemd/user (Linux) — no elevated privileges required.
 	Option: service.KeyValue{
-		"UserService": true,
+		"UserService":   true,
+		"SystemdScript": systemdUserServiceScript,
 	},
 }
 
@@ -374,35 +387,6 @@ func hashFile(path string) (string, error) {
 		return "", err
 	}
 	return "sha256:" + fmt.Sprintf("%x", h.Sum(nil)), nil
-}
-
-// binaryPathForPID returns the absolute path of the executable for the given
-// PID using platform-specific APIs.
-func binaryPathForPID(pid int) (string, error) {
-	switch runtime.GOOS {
-	case "linux":
-		return os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
-	case "darwin":
-		buf := make([]byte, 4096)
-		ret, _, errno := syscall.Syscall(syscall.SYS_PROC_INFO,
-			uintptr(9), // PROC_PIDPATHINFO
-			uintptr(pid),
-			uintptr(unsafe.Pointer(&buf[0])),
-		)
-		if errno != 0 || ret == 0 {
-			return "", fmt.Errorf("proc_pidpath failed for pid %d: %w", pid, errno)
-		}
-		n := ret
-		for i := uintptr(0); i < ret; i++ {
-			if buf[i] == 0 {
-				n = i
-				break
-			}
-		}
-		return string(buf[:n]), nil
-	default:
-		return "", fmt.Errorf("binaryPathForPID: unsupported platform %s", runtime.GOOS)
-	}
 }
 
 // darwinLaunchctl runs a launchctl command and wraps any error with its output.
