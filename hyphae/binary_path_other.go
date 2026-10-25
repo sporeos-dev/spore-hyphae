@@ -1,12 +1,15 @@
 // Copyright 2026 Matt Harrison
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//go:build !darwin && !linux && !windows
+//go:build !linux && !windows && (!darwin || !cgo)
 
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"runtime"
+)
 
 func binaryPathForPID(pid int) (string, error) {
-	return "", fmt.Errorf("binaryPathForPID: unsupported platform")
+	return "", fmt.Errorf("binaryPathForPID: unsupported platform %s", runtime.GOOS)
 }

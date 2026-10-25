@@ -31,6 +31,19 @@ const (
 
 const appId = "dev.sporeos.HYPHAE"
 
+const systemdUserServiceScript = `[Unit]
+Description={{.Description}}
+ConditionFileIsExecutable={{.Path|cmdEscape}}
+
+[Service]
+ExecStart={{.Path|cmdEscape}}{{range .Arguments}} {{.|cmd}}{{end}}
+Restart=always
+RestartSec=120
+
+[Install]
+WantedBy=default.target
+`
+
 var svcConfig = &service.Config{
 	Name:        "dev.sporeos.agent",
 	DisplayName: "Spore Agent",
@@ -38,7 +51,8 @@ var svcConfig = &service.Config{
 	// UserService installs to ~/Library/LaunchAgents (macOS) and
 	// ~/.config/systemd/user (Linux) — no elevated privileges required.
 	Option: service.KeyValue{
-		"UserService": true,
+		"UserService":   true,
+		"SystemdScript": systemdUserServiceScript,
 	},
 }
 

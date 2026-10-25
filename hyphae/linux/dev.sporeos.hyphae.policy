@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd">
+<policyconfig>
+  <vendor>Spore OS</vendor>
+  <vendor_url>https://github.com/sporeos-dev</vendor_url>
+  <action id="dev.sporeos.hyphae.confirm">
+    <description>Authorize a Spore node operation</description>
+    <message>Authenticate to authorize this Spore operation</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>auth_self</allow_inactive>
+      <allow_active>auth_self</allow_active>
+    </defaults>
+  </action>
+</policyconfig>

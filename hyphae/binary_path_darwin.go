@@ -1,32 +1,27 @@
 // Copyright 2026 Matt Harrison
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//go:build darwin
+//go:build darwin && cgo
 
 package main
 
+/*
+#cgo LDFLAGS: -lproc
+#include <libproc.h>
+#include <stdlib.h>
+*/
+import "C"
+
 import (
 	"fmt"
-	"syscall"
 	"unsafe"
 )
 
 func binaryPathForPID(pid int) (string, error) {
-	buf := make([]byte, 4096)
-	ret, _, errno := syscall.Syscall(syscall.SYS_PROC_INFO,
-		uintptr(9),
-		uintptr(pid),
-		uintptr(unsafe.Pointer(&buf[0])),
-	)
-	if errno != 0 || ret == 0 {
-		return "", fmt.Errorf("proc_pidpath failed for pid %d: %w", pid, errno)
+	buffer := make([]byte, C.PROC_PIDPATHINFO_MAXSIZE)
+	length := C.proc_pidpath(C.int(pid), unsafe.Pointer(&buffer[0]), C.uint32_t(len(buffer)))
+	if length <= 0 {
+		return "", fmt.Errorf("proc_pidpath failed for pid %d", pid)
 	}
-	n := ret
-	for i := uintptr(0); i < ret; i++ {
-		if buf[i] == 0 {
-			n = i
-			break
-		}
-	}
-	return string(buf[:n]), nil
+	return C.GoString((*C.char)(unsafe.Pointer(&buffer[0]))), nil
 }
