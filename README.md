@@ -5,12 +5,14 @@ An extension of the hub to interact securely with the user space.
 
 `HYPHAE.confirm` accepts a requesting node ID and command, then returns exactly
 one `yes` or `no` response flag. On macOS it uses system authentication with
-Touch ID and signed-in-user password fallback. The system prompt identifies the
-node and command, but does not display raw command arguments, which can contain
-personal or secret values.
+Touch ID and signed-in-user password fallback. On Windows it uses the native
+Windows Hello/PIN current-user verification prompt. If Windows Hello/PIN is
+unavailable or unconfigured, the request fails closed. The system prompt
+identifies the node and command, but does not display raw command arguments,
+which can contain personal or secret values.
 
 Hyphae does not authorize or commit an operation. The hub decides when a
 protected operation requires confirmation, binds the response to its pending
-transaction, and performs any `_spore`-owned state change. Linux and Windows
-currently return an explicit unsupported-platform error until native
-authentication providers are implemented.
+transaction, and performs any `_spore`-owned state change. Linux currently
+returns an explicit unsupported-platform error until a native authentication
+provider is implemented.

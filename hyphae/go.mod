@@ -9,4 +9,4 @@ require (
 	github.com/sporeos-dev/spore-client-libs/spore_go v0.0.0
 )
 
-require golang.org/x/sys v0.34.0 // indirect
+require golang.org/x/sys v0.34.0

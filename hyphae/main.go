@@ -14,10 +14,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"time"
-
 	"syscall"
-	"unsafe"
+	"time"
 
 	"github.com/kardianos/service"
 	spore "github.com/sporeos-dev/spore-client-libs/spore_go"
@@ -374,35 +372,6 @@ func hashFile(path string) (string, error) {
 		return "", err
 	}
 	return "sha256:" + fmt.Sprintf("%x", h.Sum(nil)), nil
-}
-
-// binaryPathForPID returns the absolute path of the executable for the given
-// PID using platform-specific APIs.
-func binaryPathForPID(pid int) (string, error) {
-	switch runtime.GOOS {
-	case "linux":
-		return os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
-	case "darwin":
-		buf := make([]byte, 4096)
-		ret, _, errno := syscall.Syscall(syscall.SYS_PROC_INFO,
-			uintptr(9), // PROC_PIDPATHINFO
-			uintptr(pid),
-			uintptr(unsafe.Pointer(&buf[0])),
-		)
-		if errno != 0 || ret == 0 {
-			return "", fmt.Errorf("proc_pidpath failed for pid %d: %w", pid, errno)
-		}
-		n := ret
-		for i := uintptr(0); i < ret; i++ {
-			if buf[i] == 0 {
-				n = i
-				break
-			}
-		}
-		return string(buf[:n]), nil
-	default:
-		return "", fmt.Errorf("binaryPathForPID: unsupported platform %s", runtime.GOOS)
-	}
 }
 
 // darwinLaunchctl runs a launchctl command and wraps any error with its output.
