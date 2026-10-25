@@ -1,7 +1,7 @@
 // Copyright 2026 Matt Harrison
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//go:build !darwin || !cgo
+//go:build (!darwin && !linux) || (darwin && !cgo)
 
 package main
 
