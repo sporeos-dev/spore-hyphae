@@ -252,6 +252,7 @@ func (p *program) handleSpawn(req *request.Request) {
 	}
 
 	cmd := exec.Command(binary)
+	configureSpawnCommand(cmd)
 	if err := cmd.Start(); err != nil {
 		_ = p.client.SendResponseError(response.Error(req.Command(), req.Handle(), errRuntime, err.Error()))
 		return

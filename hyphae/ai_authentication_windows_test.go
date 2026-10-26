@@ -5,20 +5,19 @@
 
 package main
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
-func TestWindowsConsentResultMapping(t *testing.T) {
-	verified, err := interpretConsentResult(consentVerified)
-	if err != nil || !verified {
-		t.Fatalf("verified result = (%t, %v), want (true, nil)", verified, err)
+func TestWindowsAuthenticationSmoke(t *testing.T) {
+	if os.Getenv("SPORE_WINDOWS_AUTH_SMOKE") != "1" {
+		t.Skip("set SPORE_WINDOWS_AUTH_SMOKE=1 to verify the Windows credential prompt")
 	}
 
-	verified, err = interpretConsentResult(consentCanceled)
-	if err != nil || verified {
-		t.Fatalf("canceled result = (%t, %v), want (false, nil)", verified, err)
+	confirmed, err := authenticateUser("Spore Hyphae test: enter your Windows password or cancel this request.")
+	if err != nil {
+		t.Fatalf("Windows authentication failed: %v", err)
 	}
-
-	if _, err := interpretConsentResult(consentNotConfiguredForUser); err == nil {
-		t.Fatal("unconfigured result unexpectedly succeeded")
-	}
+	t.Logf("Windows authentication prompt completed; confirmed=%t", confirmed)
 }
